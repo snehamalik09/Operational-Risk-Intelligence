@@ -4,7 +4,7 @@
 
 A scoped ServiceNow application (`x_ori`) that analyzes resolved incidents monthly using Claude AI, detects recurring operational risk patterns, presents them as human-reviewed recommendations, and creates Problem records upon approval.
 
-**The core loop:** Incidents → Noise filter → Cluster by CI/service → Claude analysis → Recommendation → Problem Manager approval → Problem record.
+**The core loop:** Incidents → Cluster (with noise filtering built in) → Claude analysis → Recommendation → Problem Manager approval → Problem record.
 
 ---
 
@@ -70,15 +70,13 @@ M2M junction linking each recommendation to its source incidents.
 ## Pipeline Stages
 
 ```
-Stage 0 — Noise Filter
+Stage 1 — Cluster Builder (includes noise filtering)
   Exclude known-routine categories/subcategories at query time.
-  Exclude keyword-matched descriptions per record.
-
-Stage 1 — Cluster Builder
   GlideAggregate query 1: group by (CI + category + assignment_group)
   GlideAggregate query 2: group by (business_service + category)
   Discard clusters below minimum incident threshold.
   Skip clusters already processed this calendar month (MD5 dedup).
+  Per-record keyword check to exclude miscategorised noise incidents.
 
 Stage 2 — Claude Analysis (per cluster)
   Build sanitized prompt from cluster incident data.
@@ -104,8 +102,7 @@ Problem Creation
 
 | Script Include | Owns |
 |---|---|
-| `ORINoiseFilter` | Category/subcategory exclusion queries; keyword matching; exclusion counters |
-| `ORIClusterBuilder` | GlideAggregate grouping; cluster persistence; incident data serialization; deduplication |
+| `ORIClusterBuilder` | Noise filtering (category/subcategory exclusion + keyword matching); GlideAggregate grouping; cluster persistence; incident data serialization; deduplication |
 | `ORIClaudeClient` | Prompt construction; API call; 429 retry; JSON parsing; confidence threshold |
 | `ORIProblemCreator` | Duplicate guard; Problem creation; incident association |
 | `ORIAnalysisEngine` | Pipeline orchestration; Analysis Run lifecycle; per-cluster error isolation; event firing |

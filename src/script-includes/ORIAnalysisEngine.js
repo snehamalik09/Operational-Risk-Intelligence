@@ -40,8 +40,8 @@ ORIAnalysisEngine.prototype = {
 
     var runGr = new GlideRecord('x_ori_analysis_run');
     runGr.get(runSysId);
-    runGr.setValue('incidents_excluded', clusterBuilder.noiseFilter.excludedCount);
-    runGr.setValue('noise_filter_summary', clusterBuilder.noiseFilter.getSummary());
+    runGr.setValue('incidents_excluded', clusterBuilder.noiseExcludedCount);
+    runGr.setValue('noise_filter_summary', clusterBuilder.getNoiseFilterSummary());
     runGr.setValue('incidents_analyzed', totalIncidents);
     runGr.update();
 

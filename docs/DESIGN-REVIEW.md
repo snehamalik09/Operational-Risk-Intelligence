@@ -114,7 +114,7 @@ Legitimate. The orchestrator needs to exist. It becomes simpler because it no lo
 
 | Script Include | Decision |
 |---|---|
-| `ORINoiseFilter` | **Eliminate** — fold into ORIClusterBuilder |
+| `ORINoiseFilter` | **Eliminated** — folded into ORIClusterBuilder |
 | `ORIClusterBuilder` | Keep, remove service-centric query and dedup |
 | `ORIClaudeClient` | Keep, take clusterData object instead of sys_id |
 | `ORIProblemCreator` | Keep, simplify _associateIncidents |

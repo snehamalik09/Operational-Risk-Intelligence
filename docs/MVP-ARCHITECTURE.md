@@ -71,8 +71,7 @@ Trigger layer
 
 Analysis layer
   ORIAnalysisEngine        orchestrates pipeline, owns Analysis Run record
-  ORINoiseFilter           stage 0: excludes routine service desk incidents
-  ORIClusterBuilder        stage 1: groups incidents into structural clusters
+  ORIClusterBuilder        stage 1: noise filtering + groups incidents into structural clusters
   ORIClaudeClient          stage 2: calls Claude API, parses response
 
 Action layer
@@ -81,8 +80,7 @@ Action layer
   UI Actions (×2)          Approve and Reject buttons on recommendation form
 
 Notification layer
-  Notification (insert)    alerts reviewer group when recommendation created
-  Notification (event)     sends run summary after analysis completes
+  Notification (event)     sends run summary after analysis completes (x_ori.analysis.complete)
 ```
 
 ---
