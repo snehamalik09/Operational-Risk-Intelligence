@@ -8,5 +8,7 @@
 (function() {
     current.setValue('state', 'approved');
     current.update();
+    var creator = new ORIProblemCreator();
+    creator.createProblem(current.getUniqueValue());
     action.setRedirectURL(current);
 })();

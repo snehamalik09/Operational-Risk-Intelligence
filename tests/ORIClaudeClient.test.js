@@ -1,63 +1,74 @@
 // Background script to test ORIClaudeClient
 // Run in System > Background Scripts
+// All tests operate on _parsePatterns and _buildSystemPrompt — no real API call required
 
 var client = new ORIClaudeClient();
-client.initialize();
 
-// Test 1: _parseResponse with minimal JSON (no pattern)
-var test1Input = '{"is_pattern": false}';
-var test1Result = client._parseResponse(test1Input);
-var test1Pass = test1Result.success === true && test1Result.result.is_pattern === false;
-gs.print('Test 1 _parseResponse no pattern: ' + (test1Pass ? 'PASS' : 'FAIL'));
+// Test 1: _parsePatterns handles empty patterns array
+var r1 = client._parsePatterns('{"patterns": []}');
+gs.print('Test 1 empty patterns: ' + (r1.success && r1.patterns.length === 0 ? 'PASS' : 'FAIL'));
 
-// Test 2: _parseResponse with valid full JSON (is_pattern=true, confidence=0.9, all fields)
-var test2Input = '{"is_pattern": true, "confidence": 0.9, "pattern_summary": "Database timeout pattern", "root_cause_hypothesis": "Connection pool exhaustion on primary database server.", "recommendation": "Increase connection pool size and implement monitoring.", "severity": "high", "problem_statement": "Recurring database connection timeouts affecting service availability"}';
-var test2Result = client._parseResponse(test2Input);
-var test2Pass = test2Result.success === true && test2Result.result.is_pattern === true && test2Result.result.confidence === 0.9;
-gs.print('Test 2 _parseResponse full JSON: ' + (test2Pass ? 'PASS' : 'FAIL'));
+// Test 2: _parsePatterns returns valid pattern with all required fields
+var validPattern = JSON.stringify({ patterns: [{
+    pattern_name: 'DB Connection Exhaustion',
+    pattern_summary: 'Recurring DB timeout.',
+    root_cause_hypothesis: 'Connection pool exhausted.',
+    confidence: 0.9,
+    trend_direction: 'increasing',
+    affected_incidents: ['INC001', 'INC002'],
+    recommended_action: 'Investigate connection pool.',
+    problem_statement: 'Recurring DB timeouts on PRD-DB01',
+    primary_ci: 'PRD-DB01'
+}]});
+var r2 = client._parsePatterns(validPattern);
+gs.print('Test 2 valid pattern parsed: ' + (r2.success && r2.patterns.length === 1 ? 'PASS' : 'FAIL'));
+gs.print('  pattern_name: ' + (r2.patterns[0] && r2.patterns[0].pattern_name));
 
-// Test 3: _parseResponse strips markdown code fences
-var test3Input = '```json\n{"is_pattern": false}\n```';
-var test3Result = client._parseResponse(test3Input);
-var test3Pass = test3Result.success === true && test3Result.result.is_pattern === false;
-gs.print('Test 3 _parseResponse strips markdown: ' + (test3Pass ? 'PASS' : 'FAIL'));
+// Test 3: _parsePatterns strips markdown fences
+var r3 = client._parsePatterns('```json\n{"patterns": []}\n```');
+gs.print('Test 3 strips markdown fences: ' + (r3.success ? 'PASS' : 'FAIL'));
 
-// Test 4: _parseResponse with low confidence (0.3)
-var test4Input = '{"is_pattern": true, "confidence": 0.3, "pattern_summary": "Weak pattern", "root_cause_hypothesis": "Unknown cause.", "recommendation": "Investigate further.", "severity": "low", "problem_statement": "Weak pattern detected"}';
-var test4Result = client._parseResponse(test4Input);
-var test4Pass = test4Result.success === true && test4Result.result.is_pattern === false && test4Result.result.skipped_reason === 'confidence_below_threshold';
-gs.print('Test 4 _parseResponse low confidence: ' + (test4Pass ? 'PASS' : 'FAIL'));
+// Test 4: _parsePatterns filters out patterns below confidence threshold
+var lowConf = JSON.stringify({ patterns: [{
+    pattern_name: 'Weak Pattern', pattern_summary: 'x', root_cause_hypothesis: 'x',
+    confidence: 0.3, trend_direction: 'stable',
+    affected_incidents: ['INC001', 'INC002'],
+    recommended_action: 'x', problem_statement: 'x', primary_ci: 'CI-01'
+}]});
+var r4 = client._parsePatterns(lowConf);
+gs.print('Test 4 low confidence filtered: ' + (r4.success && r4.patterns.length === 0 ? 'PASS' : 'FAIL'));
 
-// Test 5: _parseResponse with missing required field (no pattern_summary)
-var test5Input = '{"is_pattern": true, "confidence": 0.9, "root_cause_hypothesis": "Some cause.", "recommendation": "Do something.", "severity": "high", "problem_statement": "Some statement"}';
-var test5Result = client._parseResponse(test5Input);
-var test5Pass = test5Result.success === false && test5Result.error.indexOf('pattern_summary') !== -1;
-gs.print('Test 5 _parseResponse missing field: ' + (test5Pass ? 'PASS' : 'FAIL'));
+// Test 5: _parsePatterns filters out patterns with fewer than 2 affected incidents
+var oneIncident = JSON.stringify({ patterns: [{
+    pattern_name: 'Single Incident', pattern_summary: 'x', root_cause_hypothesis: 'x',
+    confidence: 0.9, trend_direction: 'stable',
+    affected_incidents: ['INC001'],
+    recommended_action: 'x', problem_statement: 'x', primary_ci: 'CI-01'
+}]});
+var r5 = client._parsePatterns(oneIncident);
+gs.print('Test 5 single incident filtered: ' + (r5.success && r5.patterns.length === 0 ? 'PASS' : 'FAIL'));
 
-// Test 6: _buildPrompt with mock cluster data containing ci_name='PRD-DB01' and 1 incident
-var mockClusterData = {
-  ci_name: 'PRD-DB01',
-  group_name: 'Database Team',
-  service_name: 'Order Processing',
-  category: 'Infrastructure',
-  start_date: '2025-01-01',
-  end_date: '2025-01-31',
-  incidents: [
-    {
-      number: 'INC0001001',
-      short_description: 'Database connection timeout',
-      resolution_notes: 'Increased pool size',
-      priority: 'High',
-      category: 'Infrastructure'
-    }
-  ]
-};
-var test6Prompt = client._buildPrompt(mockClusterData);
-var test6Pass = test6Prompt.indexOf('PRD-DB01') !== -1;
-gs.print('Test 6 _buildPrompt contains CI name: ' + (test6Pass ? 'PASS' : 'FAIL'));
+// Test 6: _parsePatterns returns failure for non-JSON content
+var r6 = client._parsePatterns('This is not JSON');
+gs.print('Test 6 non-JSON returns failure: ' + (!r6.success ? 'PASS' : 'FAIL'));
 
-// Test 7: _buildPrompt includes the incident number in the output
-var test7Pass = test6Prompt.indexOf('INC0001001 |') !== -1;
-gs.print('Test 7 _buildPrompt includes incident number: ' + (test7Pass ? 'PASS' : 'FAIL'));
+// Test 7: _parsePatterns filters pattern missing required field (primary_ci absent)
+var missingField = JSON.stringify({ patterns: [{
+    pattern_name: 'Missing Primary CI', pattern_summary: 'x', root_cause_hypothesis: 'x',
+    confidence: 0.9, trend_direction: 'stable',
+    affected_incidents: ['INC001', 'INC002'],
+    recommended_action: 'x', problem_statement: 'x'
+}]});
+var r7 = client._parsePatterns(missingField);
+gs.print('Test 7 missing primary_ci filtered: ' + (r7.success && r7.patterns.length === 0 ? 'PASS' : 'FAIL'));
 
-gs.print('All tests completed');
+// Test 8: _buildSystemPrompt returns a non-empty string containing key instructions
+var prompt = client._buildSystemPrompt();
+gs.print('Test 8 system prompt non-empty: ' + (typeof prompt === 'string' && prompt.length > 100 ? 'PASS' : 'FAIL'));
+gs.print('Test 8 prompt contains pattern_name field: ' + (prompt.indexOf('pattern_name') !== -1 ? 'PASS' : 'FAIL'));
+
+// Test 9: analyzePool returns empty patterns immediately for empty incident array
+var r9 = client.analyzePool([], { period_start: '2026-05-01', period_end: '2026-05-31', total_incidents: 0 });
+gs.print('Test 9 empty pool: ' + (r9.success && r9.patterns.length === 0 ? 'PASS' : 'FAIL'));
+
+gs.print('All ORIClaudeClient tests completed');
