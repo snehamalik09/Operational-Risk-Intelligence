@@ -4,7 +4,7 @@
 
 A scoped ServiceNow application (`x_ori`) that analyzes resolved incidents monthly using Claude AI, detects recurring operational risk patterns, presents them as human-reviewed recommendations, and creates Problem records upon approval.
 
-**The core loop:** Incidents → Cluster (with noise filtering built in) → Claude analysis → Recommendation → Problem Manager approval → Problem record.
+**The core loop:** Incidents → Noise filter → Risk score → Claude semantic analysis (full pool, one call) → Recommendations → Problem Manager approval → Problem record.
 
 ---
 
@@ -13,8 +13,11 @@ A scoped ServiceNow application (`x_ori`) that analyzes resolved incidents month
 **Monthly batch, not real-time.**
 Trust in AI output needs to be earned first. A monthly batch gives a controlled feedback loop to tune prompts and thresholds. Real-time triggering is Phase 2.
 
-**Two-stage pipeline: structure first, AI second.**
-ServiceNow-side grouping (GlideAggregate) is free. Claude is called once per cluster, not once per incident. This keeps token costs bounded and prompts focused.
+**Semantic detection, not structural clustering.**
+The original design grouped incidents by CI + Category + Assignment Group before sending them to Claude. This was rejected because incidents sharing the same CI and category can represent completely different problems (database timeout vs. memory leak vs. storage exhaustion), while incidents across different CIs can represent the same problem (JVM memory leak appearing on 4 app servers). Claude receives the full scored incident pool and groups by root cause semantically. ServiceNow handles filtering, scoring, and governance — Claude handles pattern recognition.
+
+**One Claude call per run, not one per cluster.**
+Token cost scales with pool size, bounded by `x_ori.max_incidents_per_call`. Pool is sorted by risk score and truncated if needed — highest-risk incidents always analysed first.
 
 **Human approval gate is mandatory.**
 AI-generated Problem records without review would pollute the Problem backlog. The gate is a simple state field on the recommendation record — not a native ServiceNow approval engine.
@@ -41,59 +44,62 @@ All configuration lives in `x_ori.*` sys_properties, not a custom admin table. S
 
 ## Custom Tables and Justification
 
-Four custom tables are required. Native ServiceNow tables were considered for each.
+Two custom tables are required. Native ServiceNow tables were considered for each.
 
 ### `x_ori_analysis_run`
-Tracks each monthly pipeline execution: run date, status, incident counts, cluster counts, recommendation counts, error log.
+Tracks each monthly pipeline execution: run date, status, incident counts (reviewed / excluded / analyzed), patterns identified, recommendations generated, error log.
 
 **Why custom:** `sys_trigger_history` tracks scheduler execution but is read-only platform metadata. It cannot hold domain-specific observability fields. No native "analysis run" concept exists in ServiceNow.
 
-### `x_ori_incident_cluster`
-Represents one structural group of incidents (e.g., all Application incidents on CI PRD-DB01 assigned to the DBA team). Holds the serialized incident data sent to Claude.
-
-**Why custom:** There is no native ServiceNow concept of an analytical incident cluster. The nearest alternatives (`cmdb_rel_ci`, `sn_ml_*`) are either CI relationship tables or platform ML tables not designed for this use case.
-
 ### `x_ori_ai_recommendation`
-Claude's output for one cluster — pattern summary, root cause hypothesis, recommendation, draft Problem statement, confidence score, approval state.
+Claude's output for one identified pattern — pattern name, pattern summary, root cause hypothesis, recommendation, draft Problem statement, confidence score, trend direction, primary CI, linked incidents (JSON), dedup key, approval state.
 
 **Why custom, not `problem`:** Creating a `problem` record for every AI suggestion defeats the purpose of the approval gate. Unvalidated AI output must not appear in the Problem backlog. The recommendation is a *pre-Problem* artifact.
 
-**Why not extend `task`:** Extending `task` would provide free assignment, SLAs, and notifications, but adds schema overhead and portal visibility that is unnecessary for MVP. A custom table keeps scope tight.
+**Why not extend `task`:** Extending `task` adds 80+ fields and portal visibility that is unnecessary for MVP. A custom table keeps scope tight.
 
-### `x_ori_recommendation_incident`
-M2M junction linking each recommendation to its source incidents.
-
-**Why custom, not `problem_incident`:** The native `problem_incident` table links Problems to Incidents. At recommendation time, no Problem exists yet. This junction must exist *before* the Problem is created so that the Problem Manager can see which incidents triggered the recommendation. After approval, `ORIProblemCreator` uses this table to populate `incident.problem_id`.
+**Incident linkage:** The `linked_incidents` Long Text field stores a JSON array of `{number, sys_id}` pairs identifying the incidents Claude grouped into this pattern. No separate M2M junction table is required — `ORIProblemCreator` parses this JSON directly when associating incidents with the created Problem.
 
 ---
 
 ## Pipeline Stages
 
 ```
-Stage 1 — Cluster Builder (includes noise filtering)
-  Exclude known-routine categories/subcategories at query time.
-  GlideAggregate query 1: group by (CI + category + assignment_group)
-  GlideAggregate query 2: group by (business_service + category)
-  Discard clusters below minimum incident threshold.
-  Skip clusters already processed this calendar month (MD5 dedup).
-  Per-record keyword check to exclude miscategorised noise incidents.
+Stage 1 — Noise Filtering (ORIAnalysisEngine)
+  Layer 1: category/subcategory exclusion at query time (configurable lists)
+  Layer 2: keyword exclusion per record (configurable list)
+  Track: total_incidents_reviewed, incidents_excluded, incidents_analyzed
 
-Stage 2 — Claude Analysis (per cluster)
-  Build sanitized prompt from cluster incident data.
-  Call Claude API via RESTMessageV2.
-  Parse JSON response.
-  If is_pattern=true AND confidence >= threshold: create Recommendation.
-  Else: mark cluster skipped.
+Stage 2 — Incident Risk Scoring (ORIIncidentScorer)
+  Per incident: Priority + Impact + Urgency + Major Incident flag
+               + Category bonus + Risk keyword bonus
+  Score is informational — included in Claude payload, not used as filter
+
+Stage 3 — Pool Preparation (ORIAnalysisEngine)
+  Sort by risk score descending
+  Truncate to x_ori.max_incidents_per_call if needed
+  Sanitize: include description fields, exclude PII
+
+Stage 4 — Claude Semantic Analysis (ORIClaudeClient)
+  Single API call with full incident pool
+  Claude groups incidents by root cause — crosses CI/category boundaries
+  Returns: patterns[] each with affected_incidents[], confidence, trend_direction
+
+Stage 5 — Dedup + Recommendation Creation (ORIAnalysisEngine)
+  dedup_key = pattern_name + '|' + primary_ci
+  Skip if active recommendation with same dedup_key exists this month
+  Create x_ori_ai_recommendation; resolve incident numbers to sys_ids
 
 Approval — Human Gate
-  Problem Manager reviews Recommendation form.
-  Approve: Business Rule triggers ORIProblemCreator.
-  Reject: capture reason, close recommendation.
+  Problem Manager reviews Recommendation form
+  Approve: UI Action calls ORIProblemCreator directly
+  Reject: capture reason, state = rejected
 
-Problem Creation
-  Duplicate guard: check for open Problem on same CI+category.
-  If found: link recommendation to existing Problem.
-  Else: create Problem, associate incidents, update incident.problem_id.
+Problem Creation (ORIProblemCreator)
+  Duplicate guard: open Problem where CI = primary_ci
+                   AND short_description STARTS WITH first 40 chars of pattern_name?
+  If found: link to existing, state = linked_to_existing
+  Else: create Problem, set incident.problem_id for all linked incidents
 ```
 
 ---
@@ -102,10 +108,10 @@ Problem Creation
 
 | Script Include | Owns |
 |---|---|
-| `ORIClusterBuilder` | Noise filtering (category/subcategory exclusion + keyword matching); GlideAggregate grouping; cluster persistence; incident data serialization; deduplication |
-| `ORIClaudeClient` | Prompt construction; API call; 429 retry; JSON parsing; confidence threshold |
-| `ORIProblemCreator` | Duplicate guard; Problem creation; incident association |
-| `ORIAnalysisEngine` | Pipeline orchestration; Analysis Run lifecycle; per-cluster error isolation; event firing |
+| `ORIIncidentScorer` | Deterministic risk score calculation per incident (priority, impact, urgency, major incident, category bonus, keyword bonus) |
+| `ORIClaudeClient` | Payload preparation; single pool-based API call; multi-pattern response parsing; confidence threshold filtering |
+| `ORIProblemCreator` | Duplicate guard (pattern_name prefix + CI); Problem creation; incident association via linked_incidents JSON |
+| `ORIAnalysisEngine` | Pipeline orchestration; noise filtering; pool truncation; dedup check; Analysis Run lifecycle; error isolation; event firing |
 
 ---
 

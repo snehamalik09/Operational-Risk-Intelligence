@@ -1,6 +1,8 @@
 # ORI Design Self-Review
 **Premise:** Challenge every decision. Propose the simplest MVP that still delivers value.
 
+> **Superseded note (2026-06-02):** The structural clustering approach critiqued and then retained in simplified form below was subsequently removed entirely by architecture revision. The revised architecture replaces GlideAggregate-based clustering with Claude semantic pattern detection across a scored incident pool. See `docs/MVP-ARCHITECTURE.md` v1.1 and `docs/PRD.md` v1.1 for the current design. This document is preserved for design decision history.
+
 ---
 
 ## Custom Tables — Verdict by Verdict
